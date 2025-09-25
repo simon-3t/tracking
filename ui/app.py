@@ -94,8 +94,8 @@ if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
-    login_container = st.container()
-    with login_container:
+    login_placeholder = st.empty()
+    with login_placeholder.container():
         st.title("🔐 Accès protégé")
         with st.form("login"):
             username = ""
@@ -108,12 +108,12 @@ if not st.session_state.authenticated:
         user_ok = True if not APP_USERNAME else username.strip() == APP_USERNAME
         if user_ok and password == APP_PASSWORD:
             st.session_state.authenticated = True
-            login_container.empty()
+            login_placeholder.empty()
             rerun = getattr(st, "experimental_rerun", None) or getattr(st, "rerun", None)
             if callable(rerun):
                 rerun()
         else:
-            login_container.error("Identifiants invalides.")
+            login_placeholder.error("Identifiants invalides.")
 
     if not st.session_state.authenticated:
         st.stop()
