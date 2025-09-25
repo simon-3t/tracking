@@ -7,6 +7,10 @@ from sqlalchemy import create_engine
 import streamlit as st
 import plotly.express as px
 import ccxt
+from dotenv import load_dotenv, find_dotenv
+
+dotenv_path = find_dotenv(usecwd=True)
+load_dotenv(dotenv_path=dotenv_path if dotenv_path else None, override=False)
 
 DB_URL = os.getenv("DB_URL", "sqlite:///pnl.db")
 eng = create_engine(DB_URL, future=True)
