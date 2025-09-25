@@ -7,6 +7,10 @@ from sqlalchemy import create_engine
 import streamlit as st
 import plotly.express as px
 import ccxt
+from dotenv import load_dotenv, find_dotenv
+
+dotenv_path = find_dotenv(usecwd=True)
+load_dotenv(dotenv_path=dotenv_path if dotenv_path else None, override=False)
 
 DB_URL = os.getenv("DB_URL", "sqlite:///pnl.db")
 eng = create_engine(DB_URL, future=True)
@@ -75,6 +79,45 @@ def spot_to_usd(quotes):
 
 # --- UI ---
 st.set_page_config(page_title="Crypto P&L Tracker", layout="wide")
+
+APP_USERNAME = os.getenv("APP_USERNAME")
+APP_PASSWORD = os.getenv("APP_PASSWORD")
+
+if not APP_PASSWORD:
+    st.error(
+        "Aucun mot de passe n'est configuré pour l'application. "
+        "Définis la variable d'environnement `APP_PASSWORD` avant de lancer Streamlit."
+    )
+    st.stop()
+
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    login_container = st.container()
+    with login_container:
+        st.title("🔐 Accès protégé")
+        with st.form("login"):
+            username = ""
+            if APP_USERNAME:
+                username = st.text_input("Utilisateur")
+            password = st.text_input("Mot de passe", type="password")
+            submit = st.form_submit_button("Se connecter")
+
+    if submit:
+        user_ok = True if not APP_USERNAME else username.strip() == APP_USERNAME
+        if user_ok and password == APP_PASSWORD:
+            st.session_state.authenticated = True
+            login_container.empty()
+            rerun = getattr(st, "experimental_rerun", None) or getattr(st, "rerun", None)
+            if callable(rerun):
+                rerun()
+        else:
+            login_container.error("Identifiants invalides.")
+
+    if not st.session_state.authenticated:
+        st.stop()
+
 st.title("📈 Crypto P&L Tracker")
 
 df = load_trades()
