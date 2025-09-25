@@ -1,33 +1,14 @@
-"""Configuration management for the tracking application."""
+# app/config.py
+import os
+from dotenv import load_dotenv
 
-from functools import lru_cache
-from pathlib import Path
-from typing import Optional
+load_dotenv()  # charge le fichier .env
 
-from pydantic import BaseSettings
+class Settings:
+    DB_URL = os.getenv("DB_URL", "sqlite:///pnl.db")
+    BINANCE_KEY = os.getenv("BINANCE_KEY")
+    BINANCE_SECRET = os.getenv("BINANCE_SECRET")
+    KRAKEN_KEY = os.getenv("KRAKEN_KEY")
+    KRAKEN_SECRET = os.getenv("KRAKEN_SECRET")
 
-
-class Settings(BaseSettings):
-    """Application settings loaded from environment variables."""
-
-    database_url: str
-    binance_api_key: Optional[str] = None
-    binance_api_secret: Optional[str] = None
-    kraken_api_key: Optional[str] = None
-    kraken_api_secret: Optional[str] = None
-    etherscan_api_key: Optional[str] = None
-
-    class Config:
-        env_file = Path(__file__).resolve().parent.parent / ".env"
-        env_file_encoding = "utf-8"
-
-
-@lru_cache()
-def get_settings() -> Settings:
-    """Return cached application settings."""
-
-    return Settings()
-
-
-# A module-level singleton for convenience
-settings = get_settings()
+settings = Settings()
