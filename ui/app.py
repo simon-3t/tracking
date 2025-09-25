@@ -75,6 +75,38 @@ def spot_to_usd(quotes):
 
 # --- UI ---
 st.set_page_config(page_title="Crypto P&L Tracker", layout="wide")
+
+APP_USERNAME = os.getenv("APP_USERNAME")
+APP_PASSWORD = os.getenv("APP_PASSWORD")
+
+if not APP_PASSWORD:
+    st.error(
+        "Aucun mot de passe n'est configuré pour l'application. "
+        "Définis la variable d'environnement `APP_PASSWORD` avant de lancer Streamlit."
+    )
+    st.stop()
+
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    st.title("🔐 Accès protégé")
+    with st.form("login"):
+        if APP_USERNAME:
+            username = st.text_input("Utilisateur")
+        password = st.text_input("Mot de passe", type="password")
+        submit = st.form_submit_button("Se connecter")
+
+    if submit:
+        user_ok = True if not APP_USERNAME else username.strip() == APP_USERNAME
+        if user_ok and password == APP_PASSWORD:
+            st.session_state.authenticated = True
+            st.experimental_rerun()
+        else:
+            st.error("Identifiants invalides.")
+
+    st.stop()
+
 st.title("📈 Crypto P&L Tracker")
 
 df = load_trades()
