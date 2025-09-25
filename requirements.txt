@@ -4,5 +4,5 @@ pandas>=2.2.0
 python-dotenv>=1.0.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
-echo "streamlit>=1.36.0" >> requirements.txt
-echo "plotly>=5.20.0" >> requirements.txt
+streamlit>=1.36.0
+plotly>=5.20.0
