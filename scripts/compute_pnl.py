@@ -1,33 +1,45 @@
-# scripts/compute_pnl.py
+import os
 import pandas as pd
-from app.models import init_db, Trade
+from dotenv import load_dotenv
+from sqlalchemy import create_engine
+from app.models import Trade
 
-Session = init_db("sqlite:///pnl.db")
-session = Session()
+load_dotenv()
+DB_URL = os.getenv("DB_URL", "sqlite:///pnl.db")
 
-df = pd.read_sql(session.query(Trade).statement, session.bind)
-df = df.sort_values("ts")
+eng = create_engine(DB_URL, future=True)
+df = pd.read_sql_table(Trade.__tablename__, eng).sort_values("ts")
 
-results = {}
-positions = {}
+# FIFO par symbol ; calcule P&L réalisé en "quote" (ex: USDT)
+from collections import deque, defaultdict
+lots = defaultdict(lambda: deque())   # symbol -> deque([amount_base, price_quote])
+realized = defaultdict(float)
 
-for _, row in df.iterrows():
-    sym = row.symbol
-    amt, price = row.amount, row.price
-    if row.side == "buy":
-        positions.setdefault(sym, []).append([amt, price])
-    elif row.side == "sell":
+for _, r in df.iterrows():
+    sym = r["symbol"]
+    side = str(r["side"]).lower()
+    amt  = float(r["amount"] or 0.0)
+    px   = float(r["price"] or 0.0)
+
+    if amt == 0:
+        continue
+
+    if side == "buy":
+        # on empile un lot (amount à prix px)
+        lots[sym].append([amt, px])
+    elif side == "sell":
         remain = amt
-        realized = 0
-        while remain > 0 and positions[sym]:
-            lot = positions[sym][0]
-            used = min(remain, lot[0])
-            realized += used * (price - lot[1])
-            lot[0] -= used
+        while remain > 1e-12 and lots[sym]:
+            lot_amt, lot_px = lots[sym][0]
+            used = min(remain, lot_amt)
+            realized[sym] += used * (px - lot_px)
+            lot_amt -= used
             remain -= used
-            if lot[0] <= 0: positions[sym].pop(0)
-        results[sym] = results.get(sym, 0) + realized
+            if lot_amt <= 1e-12:
+                lots[sym].popleft()
+            else:
+                lots[sym][0][0] = lot_amt
 
-print("📊 Realized P&L:")
-for sym, pnl in results.items():
-    print(f"{sym}: {pnl:.2f}")
+print("📊 P&L réalisé (quote currency par symbol) :")
+for sym, pnl in sorted(realized.items()):
+    print(f"{sym:>15}  {pnl:,.2f}")
