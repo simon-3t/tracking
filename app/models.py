@@ -1,33 +1,26 @@
-"""Database models for the tracking application."""
-
-from sqlalchemy import Column, DateTime, Float, Integer, Numeric, String
-from sqlalchemy.orm import declarative_base
+# app/models.py
+from sqlalchemy import (create_engine, Column, String, Integer, Float,
+                        DateTime, UniqueConstraint)
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 Base = declarative_base()
 
-
 class Trade(Base):
-    """Represents an executed trade."""
-
     __tablename__ = "trades"
+    id = Column(String, primary_key=True)    # exchange_id
+    exchange = Column(String, index=True)
+    symbol = Column(String, index=True)
+    side = Column(String)
+    amount = Column(Float)
+    price = Column(Float)
+    fee = Column(Float)
+    fee_currency = Column(String)
+    ts = Column(Integer, index=True)
+    iso = Column(DateTime)
 
-    id = Column(Integer, primary_key=True, index=True)
-    exchange = Column(String, nullable=False)
-    symbol = Column(String, nullable=False)
-    side = Column(String, nullable=False)
-    quantity = Column(Numeric(38, 18), nullable=False)
-    price = Column(Numeric(38, 18), nullable=False)
-    fee = Column(Numeric(38, 18), nullable=True)
-    executed_at = Column(DateTime, nullable=False)
+    __table_args__ = (UniqueConstraint('id', name='uq_trade_id'),)
 
-
-class Price(Base):
-    """Represents a historical price point."""
-
-    __tablename__ = "prices"
-
-    id = Column(Integer, primary_key=True, index=True)
-    symbol = Column(String, nullable=False)
-    price = Column(Float, nullable=False)
-    source = Column(String, nullable=False)
-    collected_at = Column(DateTime, nullable=False)
+def init_db(url="sqlite:///pnl.db"):
+    eng = create_engine(url)
+    Base.metadata.create_all(eng)
+    return sessionmaker(bind=eng)
