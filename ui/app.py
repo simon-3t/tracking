@@ -205,6 +205,17 @@ if sym_filter:
     mask &= df["symbol"].isin(sym_filter)
 dff = df.loc[mask].copy()
 
+if not dff.empty:
+    dff.sort_values("datetime", inplace=True)
+    dff["quote"] = dff["symbol"].map(quote_of)
+    quotes_for_rates = sorted(q for q in dff["quote"].dropna().unique().tolist())
+    try:
+        quote_rates = spot_to_usd(quotes_for_rates) if quotes_for_rates else {}
+    except Exception:
+        quote_rates = {q: None for q in quotes_for_rates}
+else:
+    quote_rates = {}
+
 # Résumé
 st.subheader("Résumé")
 real_q = fifo_realized(dff)
@@ -217,7 +228,7 @@ for sym, val in real_q.items():
 summary = pd.DataFrame(rows).sort_values("pnl_quote", ascending=False)
 
 if not summary.empty:
-    rates = spot_to_usd(sorted(quotes))
+    rates = {q: quote_rates.get(q) for q in quotes}
     summary["quote_to_USD"] = summary["quote"].map(rates)
     summary["pnl_USD_est"] = summary.apply(lambda r: r["pnl_quote"] * r["quote_to_USD"] if pd.notnull(r["quote_to_USD"]) else None, axis=1)
 
@@ -232,6 +243,38 @@ if not summary.empty:
         st.dataframe(summary, use_container_width=True, height=400)
 else:
     st.info("Pas encore de P&L réalisé dans la période/filtres.")
+
+st.subheader("Valeur du portefeuille (USD)")
+if dff.empty:
+    st.info("Aucune donnée pour calculer la valeur du portefeuille.")
+else:
+    sides = dff["side"].fillna("").str.lower()
+    dff["amount_signed"] = dff["amount"]
+    sell_mask = sides == "sell"
+    dff.loc[sell_mask, "amount_signed"] = -dff.loc[sell_mask, "amount"].abs()
+    invalid_mask = ~sides.isin(["buy", "sell"])
+    dff.loc[invalid_mask, "amount_signed"] = 0.0
+    dff["net_base"] = dff.groupby("symbol")["amount_signed"].cumsum()
+
+    dff["quote_to_USD"] = dff["quote"].map(quote_rates)
+    dff["net_value_usd"] = dff["net_base"] * dff["price"] * dff["quote_to_USD"]
+
+    portfolio_value = (
+        dff.dropna(subset=["net_value_usd"])
+           .groupby("datetime", as_index=False)["net_value_usd"].sum()
+    )
+
+    if portfolio_value.empty:
+        st.info("Impossible de calculer la valeur nette (taux USD manquants ?).")
+    else:
+        fig_value = px.line(
+            portfolio_value,
+            x="datetime",
+            y="net_value_usd",
+            markers=True,
+            title="Valeur nette du portefeuille (USD)",
+        )
+        st.plotly_chart(fig_value, use_container_width=True)
 
 st.subheader("Trades")
 st.dataframe(
