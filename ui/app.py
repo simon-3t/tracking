@@ -1,4 +1,5 @@
 import os
+import subprocess
 from datetime import datetime
 from collections import deque, defaultdict
 
@@ -105,13 +106,81 @@ if not st.session_state.authenticated:
         user_ok = True if not APP_USERNAME else username.strip() == APP_USERNAME
         if user_ok and password == APP_PASSWORD:
             st.session_state.authenticated = True
-            st.experimental_rerun()
+            if hasattr(st, "rerun"):
+                st.rerun()
+            else:
+                st.experimental_rerun()
         else:
             st.error("Identifiants invalides.")
 
     st.stop()
 
 st.title("📈 Crypto P&L Tracker")
+
+def run_ingestion(script_path: str, exchange_label: str):
+    """Launch an ingestion script and return a feedback dict."""
+    with st.spinner(f"Mise à jour {exchange_label} en cours…"):
+        try:
+            result = subprocess.run(
+                ["python", script_path],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except FileNotFoundError:
+            return {
+                "exchange": exchange_label,
+                "status": "error",
+                "message": f"Script introuvable: {script_path}",
+                "details": None,
+            }
+        except subprocess.CalledProcessError as exc:
+            details = "\n".join(filter(None, [exc.stdout or "", exc.stderr or ""]))
+            return {
+                "exchange": exchange_label,
+                "status": "error",
+                "message": f"Erreur lors de la mise à jour {exchange_label}.",
+                "details": details.strip() or None,
+            }
+        else:
+            load_trades.clear()
+            stdout = (result.stdout or "").strip()
+            stderr = (result.stderr or "").strip()
+            details = "\n".join(filter(None, [stdout, stderr])) or None
+            return {
+                "exchange": exchange_label,
+                "status": "success",
+                "message": stdout or f"{exchange_label} mis à jour.",
+                "details": details,
+            }
+
+if "last_update" not in st.session_state:
+    st.session_state["last_update"] = None
+
+st.subheader("🔄 Mise à jour des données")
+update_feedback = None
+controls = st.columns(2)
+with controls[0]:
+    if st.button("Mettre à jour Binance", use_container_width=True):
+        update_feedback = run_ingestion("scripts/ingest_binance.py", "Binance")
+with controls[1]:
+    if st.button("Mettre à jour Kraken", use_container_width=True):
+        update_feedback = run_ingestion("scripts/ingest_kraken.py", "Kraken")
+
+if update_feedback:
+    st.session_state["last_update"] = update_feedback
+
+feedback = st.session_state.get("last_update")
+if feedback:
+    message = feedback.get("message")
+    details = feedback.get("details")
+    if feedback.get("status") == "success":
+        st.success(message or f"{feedback['exchange']} mis à jour avec succès.")
+    else:
+        st.error(message or f"{feedback['exchange']} n'a pas pu être mis à jour.")
+    if details:
+        with st.expander("Afficher les détails"):
+            st.code(details)
 
 df = load_trades()
 if df.empty:
