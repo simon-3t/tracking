@@ -382,18 +382,24 @@ with cols[2]:
 with cols[3]:
     end = st.date_input("Date fin", value=df["datetime"].max().date())
 
-mask = (df["datetime"].dt.date >= start) & (df["datetime"].dt.date <= end)
+scope_mask = pd.Series(True, index=df.index)
 if ex_filter:
-    mask &= df["exchange"].isin(ex_filter)
+    scope_mask &= df["exchange"].isin(ex_filter)
 if sym_filter:
-    mask &= df["symbol"].isin(sym_filter)
-dff = df.loc[mask].copy()
+    scope_mask &= df["symbol"].isin(sym_filter)
 
+df_scope = df.loc[scope_mask].copy()
+
+mask = (df_scope["datetime"].dt.date >= start) & (df_scope["datetime"].dt.date <= end)
+dff = df_scope.loc[mask].copy()
 if not dff.empty:
     dff.sort_values("datetime", inplace=True)
-    dff["quote"] = dff["symbol"].map(quote_of)
-    fee_currencies = dff["fee_currency"].dropna().unique().tolist()
-    quotes_for_rates = sorted(set(dff["quote"].dropna().unique().tolist()) | set(fee_currencies))
+
+if not df_scope.empty:
+    df_scope.sort_values("datetime", inplace=True)
+    df_scope["quote"] = df_scope["symbol"].map(quote_of)
+    fee_currencies = df_scope["fee_currency"].dropna().unique().tolist()
+    quotes_for_rates = sorted(set(df_scope["quote"].dropna().unique().tolist()) | set(fee_currencies))
     try:
         quote_rates = spot_to_usd(quotes_for_rates) if quotes_for_rates else {}
     except Exception:
@@ -433,157 +439,203 @@ else:
     st.info("Pas encore de P&L réalisé dans la période/filtres.")
 
 st.subheader("Valeur du portefeuille (USD)")
-if dff.empty:
+if df_scope.empty:
     st.info("Aucune donnée pour calculer la valeur du portefeuille.")
 else:
-    sides = dff["side"].fillna("").str.lower()
-    dff["amount_signed"] = dff["amount"]
-    sell_mask = sides == "sell"
-    dff.loc[sell_mask, "amount_signed"] = -dff.loc[sell_mask, "amount"].abs()
-    invalid_mask = ~sides.isin(["buy", "sell"])
-    dff.loc[invalid_mask, "amount_signed"] = 0.0
-    dff["net_base"] = dff.groupby("symbol")["amount_signed"].cumsum()
-
-    quote_cash_events = []
-    for row in dff.itertuples():
-        side = (row.side or "").lower()
-        amount = float(row.amount or 0.0)
-        price = float(row.price or 0.0)
-        dt = row.datetime
-        quote = getattr(row, "quote", None)
-        if side == "buy" and quote:
-            quote_cash_events.append({"asset": quote, "datetime": dt, "delta": -amount * price})
-        elif side == "sell" and quote:
-            quote_cash_events.append({"asset": quote, "datetime": dt, "delta": amount * price})
-
-        fee_currency = getattr(row, "fee_currency", None)
-        fee_amount = float(getattr(row, "fee", 0.0) or 0.0)
-        if fee_currency and fee_amount:
-            quote_cash_events.append({"asset": fee_currency, "datetime": dt, "delta": -fee_amount})
-
-    symbols_in_scope = sorted(dff["symbol"].dropna().unique().tolist())
-    start_dt = pd.Timestamp(start).tz_localize("UTC")
-    end_dt = pd.Timestamp(end).tz_localize("UTC")
-    all_days_utc = pd.date_range(start=start_dt.normalize(), end=end_dt.normalize(), freq="D", tz="UTC")
-    all_days_dates = [day.date() for day in all_days_utc]
-
-    daily_positions = []
-    for sym, grp in dff.groupby("symbol"):
-        series = grp.set_index("datetime")["net_base"].resample("D").last()
-        series = series.reindex(all_days_utc).ffill().fillna(0.0)
-        daily_positions.append(
-            pd.DataFrame(
-                {
-                    "symbol": sym,
-                    "day": series.index,
-                    "net_base": series.values,
-                }
-            )
-        )
-
-    cash_positions = []
-    cash_assets_needed = set()
-    if quote_cash_events:
-        cash_df = pd.DataFrame(quote_cash_events)
-        cash_df.sort_values("datetime", inplace=True)
-        cash_df["net_amount"] = cash_df.groupby("asset")["delta"].cumsum()
-        for asset, grp in cash_df.groupby("asset"):
-            cash_assets_needed.add(asset)
-            series = grp.set_index("datetime")["net_amount"].resample("D").last()
-            series = series.reindex(all_days_utc).ffill().fillna(0.0)
-            cash_positions.append(
-                pd.DataFrame(
-                    {
-                        "asset": asset,
-                        "day": series.index,
-                        "net_amount": series.values,
-                    }
-                )
-            )
-
-    if not daily_positions and not cash_positions:
-        st.info("Impossible de calculer la valeur nette (positions indisponibles).")
+    scope_positions = df_scope[df_scope["datetime"].dt.date <= end].copy()
+    if scope_positions.empty:
+        st.info("Impossible de calculer la valeur du portefeuille sur la période sélectionnée.")
     else:
-        base_assets = {base_of(sym) for sym in symbols_in_scope if sym}
-        assets_for_prices = sorted(base_assets | cash_assets_needed)
-        price_df, failed_assets = load_price_history(assets_for_prices, start, end)
+        sides = scope_positions["side"].fillna("").str.lower()
+        scope_positions["amount_signed"] = scope_positions["amount"]
+        sell_mask = sides == "sell"
+        scope_positions.loc[sell_mask, "amount_signed"] = -scope_positions.loc[sell_mask, "amount"].abs()
+        invalid_mask = ~sides.isin(["buy", "sell"])
+        scope_positions.loc[invalid_mask, "amount_signed"] = 0.0
+        scope_positions["net_base"] = scope_positions.groupby("symbol")["amount_signed"].cumsum()
 
-        unresolved_assets = set(failed_assets)
-        if not price_df.empty:
-            unresolved_assets |= set(a for a in assets_for_prices if a not in set(price_df["asset"].unique()))
-        elif assets_for_prices:
-            unresolved_assets |= set(assets_for_prices)
+        quote_cash_events = []
+        for row in scope_positions.itertuples():
+            side = (row.side or "").lower()
+            amount = float(row.amount or 0.0)
+            price = float(row.price or 0.0)
+            dt = row.datetime
+            quote = getattr(row, "quote", None)
+            if side == "buy" and quote:
+                quote_cash_events.append({"asset": quote, "datetime": dt, "delta": -amount * price})
+            elif side == "sell" and quote:
+                quote_cash_events.append({"asset": quote, "datetime": dt, "delta": amount * price})
 
-        if unresolved_assets:
-            st.warning(
-                "Prix USD indisponibles pour : " + ", ".join(sorted(unresolved_assets))
-            )
+            fee_currency = getattr(row, "fee_currency", None)
+            fee_amount = float(getattr(row, "fee", 0.0) or 0.0)
+            if fee_currency and fee_amount:
+                quote_cash_events.append({"asset": fee_currency, "datetime": dt, "delta": -fee_amount})
 
-        base_value = pd.DataFrame(columns=["day", "base_value_usd"])
-        if daily_positions:
-            if price_df.empty:
-                st.warning("Impossible de valoriser les positions en base (prix manquants).")
-            else:
-                positions_df = pd.concat(daily_positions, ignore_index=True)
-                positions_df["day"] = pd.to_datetime(positions_df["day"]).dt.date
-                positions_df["asset"] = positions_df["symbol"].map(base_of)
+        symbols_in_scope = sorted(scope_positions["symbol"].dropna().unique().tolist())
+        start_dt = pd.Timestamp(start).tz_localize("UTC")
+        end_dt = pd.Timestamp(end).tz_localize("UTC")
+        calendar_start = start_dt.normalize()
+        if not scope_positions.empty:
+            earliest = scope_positions["datetime"].min().tz_convert("UTC").normalize()
+            calendar_start = min(calendar_start, earliest)
+        calendar = pd.date_range(start=calendar_start, end=end_dt.normalize(), freq="D", tz="UTC")
 
-                valuations = positions_df.merge(price_df, on=["asset", "day"], how="left")
-                valuations = valuations.dropna(subset=["price_usd"])
-                valuations["value_usd"] = valuations["net_base"] * valuations["price_usd"]
-
-                if not valuations.empty:
-                    base_value = (
-                        valuations.groupby("day", as_index=False)["value_usd"].sum()
-                    )
-                    base_value.rename(columns={"value_usd": "base_value_usd"}, inplace=True)
-
-        cash_value = pd.DataFrame(columns=["day", "cash_value_usd"])
-        if cash_positions:
-            if price_df.empty:
-                st.warning("Impossible de valoriser les soldes en quote/frais (prix manquants).")
-            else:
-                cash_df_daily = pd.concat(cash_positions, ignore_index=True)
-                cash_df_daily["day"] = pd.to_datetime(cash_df_daily["day"]).dt.date
-                cash_df_daily = cash_df_daily.merge(price_df, on=["asset", "day"], how="left")
-                cash_df_daily = cash_df_daily.dropna(subset=["price_usd"])
-                cash_df_daily["value_usd"] = cash_df_daily["net_amount"] * cash_df_daily["price_usd"]
-
-                if not cash_df_daily.empty:
-                    cash_value = (
-                        cash_df_daily.groupby("day", as_index=False)["value_usd"].sum()
-                    )
-                    cash_value.rename(columns={"value_usd": "cash_value_usd"}, inplace=True)
-
-        if base_value.empty and cash_value.empty:
-            st.info("Impossible de calculer la valeur nette (prix USD manquants ?).")
+        daily_positions = []
+        if calendar.empty:
+            st.info("Impossible de calculer la valeur nette (calendrier vide).")
         else:
-            total = pd.DataFrame({"day": all_days_dates})
-            if not base_value.empty:
-                total = total.merge(base_value, on="day", how="left")
+            for sym, grp in scope_positions.groupby("symbol"):
+                series = grp.set_index("datetime")["net_base"].resample("D").last()
+                series = series.reindex(calendar)
+                series = series.ffill().fillna(0.0)
+                series = series.loc[start_dt.normalize():end_dt.normalize()]
+                daily_positions.append(
+                    pd.DataFrame(
+                        {
+                            "symbol": sym,
+                            "day": series.index,
+                            "net_base": series.values,
+                        }
+                    )
+                )
+
+            cash_positions = []
+            cash_assets_needed = set()
+            if quote_cash_events:
+                cash_df = pd.DataFrame(quote_cash_events)
+                cash_df.sort_values("datetime", inplace=True)
+                cash_df["net_amount"] = cash_df.groupby("asset")["delta"].cumsum()
+                for asset, grp in cash_df.groupby("asset"):
+                    cash_assets_needed.add(asset)
+                    series = grp.set_index("datetime")["net_amount"].resample("D").last()
+                    series = series.reindex(calendar)
+                    series = series.ffill().fillna(0.0)
+                    series = series.clip(lower=0.0)
+                    series = series.loc[start_dt.normalize():end_dt.normalize()]
+                    cash_positions.append(
+                        pd.DataFrame(
+                            {
+                                "asset": asset,
+                                "day": series.index,
+                                "net_amount": series.values,
+                            }
+                        )
+                    )
+
+            if not daily_positions and not cash_positions:
+                st.info("Impossible de calculer la valeur nette (positions indisponibles).")
             else:
-                total["base_value_usd"] = 0.0
+                base_assets = {base_of(sym) for sym in symbols_in_scope if sym}
+                assets_for_prices = sorted(base_assets | cash_assets_needed)
+                price_df, failed_assets = load_price_history(assets_for_prices, start, end)
 
-            if not cash_value.empty:
-                total = total.merge(cash_value, on="day", how="left")
-            else:
-                total["cash_value_usd"] = 0.0
+                unresolved_assets = set(failed_assets)
+                if not price_df.empty:
+                    unresolved_assets |= set(
+                        a for a in assets_for_prices if a not in set(price_df["asset"].unique())
+                    )
+                elif assets_for_prices:
+                    unresolved_assets |= set(assets_for_prices)
 
-            total["base_value_usd"] = total["base_value_usd"].fillna(0.0)
-            total["cash_value_usd"] = total["cash_value_usd"].fillna(0.0)
-            total["value_usd"] = total["base_value_usd"] + total["cash_value_usd"]
+                if unresolved_assets:
+                    st.warning(
+                        "Prix USD indisponibles pour : " + ", ".join(sorted(unresolved_assets))
+                    )
 
-            plot_df = total.copy()
-            plot_df["day"] = pd.to_datetime(plot_df["day"])
+                base_value = pd.DataFrame(columns=["day", "base_value_usd"])
+                base_valuations_detail = pd.DataFrame(columns=["day", "asset", "value_usd"])
+                if daily_positions:
+                    if price_df.empty:
+                        st.warning("Impossible de valoriser les positions en base (prix manquants).")
+                    else:
+                        positions_df = pd.concat(daily_positions, ignore_index=True)
+                        positions_df["day"] = pd.to_datetime(positions_df["day"]).dt.date
+                        positions_df["asset"] = positions_df["symbol"].map(base_of)
 
-            fig_value = px.line(
-                plot_df,
-                x="day",
-                y="value_usd",
-                markers=True,
-                title="Valeur nette du portefeuille (USD)",
-            )
-            st.plotly_chart(fig_value, use_container_width=True)
+                        valuations = positions_df.merge(price_df, on=["asset", "day"], how="left")
+                        valuations = valuations.dropna(subset=["price_usd"])
+                        valuations["value_usd"] = valuations["net_base"] * valuations["price_usd"]
+
+                        if not valuations.empty:
+                            base_value = (
+                                valuations.groupby("day", as_index=False)["value_usd"].sum()
+                            )
+                            base_value.rename(columns={"value_usd": "base_value_usd"}, inplace=True)
+                            base_valuations_detail = valuations[["day", "asset", "value_usd"]]
+
+                cash_value = pd.DataFrame(columns=["day", "cash_value_usd"])
+                cash_valuations_detail = pd.DataFrame(columns=["day", "asset", "value_usd"])
+                if cash_positions:
+                    if price_df.empty:
+                        st.warning("Impossible de valoriser les soldes en quote/frais (prix manquants).")
+                    else:
+                        cash_df_daily = pd.concat(cash_positions, ignore_index=True)
+                        cash_df_daily["day"] = pd.to_datetime(cash_df_daily["day"]).dt.date
+                        cash_df_daily = cash_df_daily.merge(price_df, on=["asset", "day"], how="left")
+                        cash_df_daily = cash_df_daily.dropna(subset=["price_usd"])
+                        cash_df_daily["value_usd"] = cash_df_daily["net_amount"] * cash_df_daily["price_usd"]
+
+                        if not cash_df_daily.empty:
+                            cash_value = (
+                                cash_df_daily.groupby("day", as_index=False)["value_usd"].sum()
+                            )
+                            cash_value.rename(columns={"value_usd": "cash_value_usd"}, inplace=True)
+                            cash_valuations_detail = cash_df_daily[["day", "asset", "value_usd"]]
+
+                if base_value.empty and cash_value.empty:
+                    st.info("Impossible de calculer la valeur nette (prix USD manquants ?).")
+                else:
+                    all_days_dates = [d.date() for d in pd.date_range(start=start_dt, end=end_dt, freq="D")]
+                    total = pd.DataFrame({"day": all_days_dates})
+                    if not base_value.empty:
+                        total = total.merge(base_value, on="day", how="left")
+                    else:
+                        total["base_value_usd"] = 0.0
+
+                    if not cash_value.empty:
+                        total = total.merge(cash_value, on="day", how="left")
+                    else:
+                        total["cash_value_usd"] = 0.0
+
+                    total["base_value_usd"] = total["base_value_usd"].fillna(0.0)
+                    total["cash_value_usd"] = total["cash_value_usd"].fillna(0.0)
+                    total["value_usd"] = total["base_value_usd"] + total["cash_value_usd"]
+
+                    plot_df = total.copy()
+                    plot_df["day"] = pd.to_datetime(plot_df["day"])
+
+                    fig_value = px.line(
+                        plot_df,
+                        x="day",
+                        y="value_usd",
+                        markers=True,
+                        title="Valeur nette du portefeuille (USD)",
+                    )
+                    st.plotly_chart(fig_value, use_container_width=True)
+
+                    allocation_detail = pd.concat(
+                        [base_valuations_detail, cash_valuations_detail], ignore_index=True
+                    )
+                    allocation_detail["day"] = pd.to_datetime(allocation_detail["day"])
+                    latest_day = allocation_detail["day"].max() if not allocation_detail.empty else None
+                    if latest_day is not None:
+                        latest_alloc = (
+                            allocation_detail[allocation_detail["day"] == latest_day]
+                            .groupby("asset", as_index=False)["value_usd"].sum()
+                        )
+                        latest_alloc = latest_alloc[latest_alloc["value_usd"].abs() > 0]
+                        if not latest_alloc.empty:
+                            fig_alloc = px.pie(
+                                latest_alloc,
+                                names="asset",
+                                values="value_usd",
+                                title="Répartition du portefeuille (USD)",
+                            )
+                            st.plotly_chart(fig_alloc, use_container_width=True)
+                        else:
+                            st.info("Aucune répartition à afficher pour la dernière journée.")
+                    else:
+                        st.info("Aucune répartition disponible (données insuffisantes).")
 
 st.subheader("Trades")
 st.dataframe(
