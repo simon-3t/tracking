@@ -1,11 +1,19 @@
 # scripts/ingest_kraken.py
 import os
+import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import ccxt
 from dotenv import load_dotenv
 from sqlalchemy.exc import SQLAlchemyError
+
+
+# Ensure the repository root (which contains the ``app`` package) is on PYTHONPATH
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from app.models import Trade, make_session
 
