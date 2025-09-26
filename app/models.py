@@ -1,4 +1,13 @@
-from sqlalchemy import create_engine, Column, String, Integer, Float, DateTime, UniqueConstraint
+from sqlalchemy import (
+    create_engine,
+    Column,
+    String,
+    Integer,
+    Float,
+    DateTime,
+    UniqueConstraint,
+    Date,
+)
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
 
@@ -18,6 +27,20 @@ class Trade(Base):
     iso = Column(DateTime)                  # UTC datetime
 
     __table_args__ = (UniqueConstraint('id', name='uq_trade_id'),)
+
+
+class AssetPrice(Base):
+    __tablename__ = "asset_prices"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    asset = Column(String, index=True, nullable=False)
+    day = Column(Date, index=True, nullable=False)
+    price_usd = Column(Float, nullable=False)
+    symbol = Column(String, nullable=True)
+    source = Column(String, nullable=True)
+
+    __table_args__ = (UniqueConstraint('asset', 'day', name='uq_asset_day'),)
+
 
 def make_session(db_url: str):
     eng = create_engine(db_url, future=True)
