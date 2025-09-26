@@ -205,7 +205,10 @@ def ensure_price_history(assets, start_day, end_day):
             if not rows:
                 failed.add(asset)
                 continue
+            missing_days = missing_assets[asset]
             for row in rows:
+                if row["day"] not in missing_days:
+                    continue
                 session.merge(
                     AssetPrice(
                         asset=row["asset"],
