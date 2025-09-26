@@ -263,7 +263,8 @@ dff = df.loc[mask].copy()
 if not dff.empty:
     dff.sort_values("datetime", inplace=True)
     dff["quote"] = dff["symbol"].map(quote_of)
-    quotes_for_rates = sorted(q for q in dff["quote"].dropna().unique().tolist())
+    fee_currencies = dff["fee_currency"].dropna().unique().tolist()
+    quotes_for_rates = sorted(set(dff["quote"].dropna().unique().tolist()) | set(fee_currencies))
     try:
         quote_rates = spot_to_usd(quotes_for_rates) if quotes_for_rates else {}
     except Exception:
@@ -313,6 +314,24 @@ else:
     invalid_mask = ~sides.isin(["buy", "sell"])
     dff.loc[invalid_mask, "amount_signed"] = 0.0
     dff["net_base"] = dff.groupby("symbol")["amount_signed"].cumsum()
+
+    quote_cash_events = []
+    for row in dff.itertuples():
+        side = (row.side or "").lower()
+        amount = float(row.amount or 0.0)
+        price = float(row.price or 0.0)
+        dt = row.datetime
+        quote = getattr(row, "quote", None)
+        if side == "buy" and quote:
+            quote_cash_events.append({"asset": quote, "datetime": dt, "delta": -amount * price})
+        elif side == "sell" and quote:
+            quote_cash_events.append({"asset": quote, "datetime": dt, "delta": amount * price})
+
+        fee_currency = getattr(row, "fee_currency", None)
+        fee_amount = float(getattr(row, "fee", 0.0) or 0.0)
+        if fee_currency and fee_amount:
+            quote_cash_events.append({"asset": fee_currency, "datetime": dt, "delta": -fee_amount})
+
     symbols_in_scope = sorted(dff["symbol"].dropna().unique().tolist())
     start_dt = pd.Timestamp(start).tz_localize("UTC")
     end_dt = pd.Timestamp(end).tz_localize("UTC")
@@ -330,15 +349,32 @@ else:
             })
         )
 
-    if not daily_positions:
+    cash_positions = []
+    if quote_cash_events:
+        cash_df = pd.DataFrame(quote_cash_events)
+        cash_df.sort_values("datetime", inplace=True)
+        cash_df["net_amount"] = cash_df.groupby("asset")["delta"].cumsum()
+        for asset, grp in cash_df.groupby("asset"):
+            series = grp.set_index("datetime")["net_amount"].resample("D").last()
+            series = series.reindex(all_days).ffill().fillna(0.0)
+            cash_positions.append(
+                pd.DataFrame({
+                    "asset": asset,
+                    "day": series.index,
+                    "net_amount": series.values,
+                })
+            )
+
+    if not daily_positions and not cash_positions:
         st.info("Impossible de calculer la valeur nette (positions indisponibles).")
     else:
-        positions_df = pd.concat(daily_positions, ignore_index=True)
         price_df = fetch_daily_closes(symbols_in_scope, start, end)
 
-        if price_df.empty:
-            st.info("Impossible de récupérer les prix journaliers pour valoriser le portefeuille.")
-        else:
+        base_value = pd.DataFrame(columns=["day", "base_value_usd"])
+        if daily_positions and price_df.empty:
+            st.warning("Prix journaliers indisponibles pour valoriser les positions en base.")
+        elif daily_positions and not price_df.empty:
+            positions_df = pd.concat(daily_positions, ignore_index=True)
             positions_df["day"] = positions_df["day"].dt.normalize()
             price_df["day"] = price_df["day"].dt.normalize()
 
@@ -347,22 +383,51 @@ else:
             valuations["quote_to_USD"] = valuations["quote"].map(quote_rates)
             valuations["value_usd"] = valuations["net_base"] * valuations["close"] * valuations["quote_to_USD"]
 
-            portfolio_value = (
+            base_value = (
                 valuations.dropna(subset=["value_usd"])
                           .groupby("day", as_index=False)["value_usd"].sum()
             )
+            base_value.rename(columns={"value_usd": "base_value_usd"}, inplace=True)
 
-            if portfolio_value.empty:
-                st.info("Impossible de calculer la valeur nette (prix/taux USD manquants ?).")
+        cash_value = pd.DataFrame(columns=["day", "cash_value_usd"])
+        if cash_positions:
+            cash_df_daily = pd.concat(cash_positions, ignore_index=True)
+            cash_df_daily["day"] = cash_df_daily["day"].dt.normalize()
+            cash_df_daily["asset_to_USD"] = cash_df_daily["asset"].map(quote_rates)
+            cash_df_daily["value_usd"] = cash_df_daily["net_amount"] * cash_df_daily["asset_to_USD"]
+
+            cash_value = (
+                cash_df_daily.dropna(subset=["value_usd"])
+                            .groupby("day", as_index=False)["value_usd"].sum()
+            )
+            cash_value.rename(columns={"value_usd": "cash_value_usd"}, inplace=True)
+
+        if base_value.empty and cash_value.empty:
+            st.info("Impossible de calculer la valeur nette (prix/taux USD manquants ?).")
+        else:
+            total = pd.DataFrame({"day": all_days})
+            if not base_value.empty:
+                total = total.merge(base_value, on="day", how="left")
             else:
-                fig_value = px.line(
-                    portfolio_value,
-                    x="day",
-                    y="value_usd",
-                    markers=True,
-                    title="Valeur nette du portefeuille (USD)",
-                )
-                st.plotly_chart(fig_value, use_container_width=True)
+                total["base_value_usd"] = 0.0
+
+            if not cash_value.empty:
+                total = total.merge(cash_value, on="day", how="left")
+            else:
+                total["cash_value_usd"] = 0.0
+
+            total["base_value_usd"] = total["base_value_usd"].fillna(0.0)
+            total["cash_value_usd"] = total["cash_value_usd"].fillna(0.0)
+            total["value_usd"] = total["base_value_usd"] + total["cash_value_usd"]
+
+            fig_value = px.line(
+                total,
+                x="day",
+                y="value_usd",
+                markers=True,
+                title="Valeur nette du portefeuille (USD)",
+            )
+            st.plotly_chart(fig_value, use_container_width=True)
 
 st.subheader("Trades")
 st.dataframe(
