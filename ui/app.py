@@ -78,6 +78,61 @@ def spot_to_usd(quotes):
         res[q] = rate
     return res
 
+
+@st.cache_data(ttl=1800)
+def fetch_daily_closes(symbols, start_date, end_date):
+    if not symbols:
+        return pd.DataFrame(columns=["symbol", "day", "close"])
+
+    # start_date / end_date come as datetime.date objects from Streamlit inputs
+    start_dt = pd.Timestamp(start_date).tz_localize("UTC")
+    end_dt = pd.Timestamp(end_date).tz_localize("UTC")
+    if start_dt > end_dt:
+        return pd.DataFrame(columns=["symbol", "day", "close"])
+
+    ex = ccxt.binance({'enableRateLimit': True})
+    since = int(start_dt.timestamp() * 1000)
+    # fetch_ohlcv limit is the number of candles, add a buffer in case of gaps
+    limit = min(2000, (end_dt.date() - start_dt.date()).days + 5)
+
+    rows = []
+    for sym in symbols:
+        try:
+            ohlcv = ex.fetch_ohlcv(sym, timeframe="1d", since=since, limit=limit)
+        except Exception:
+            continue
+        for ts, _open, _high, _low, close, _vol in ohlcv:
+            day = pd.Timestamp(ts, unit="ms", tz="UTC")
+            if start_dt <= day <= end_dt:
+                rows.append({
+                    "symbol": sym,
+                    "day": day.normalize(),
+                    "close": float(close) if close is not None else None,
+                })
+
+    if not rows:
+        return pd.DataFrame(columns=["symbol", "day", "close"])
+
+    closes = pd.DataFrame(rows).dropna(subset=["close"])
+    if closes.empty:
+        return closes
+
+    # Ensure every day in the range has a price (forward-fill missing days per symbol)
+    all_days = pd.date_range(start=start_dt.normalize(), end=end_dt.normalize(), freq="D", tz="UTC")
+    filled = []
+    for sym, grp in closes.groupby("symbol"):
+        g = grp.set_index("day").reindex(all_days)
+        g["close"] = g["close"].ffill()
+        g["symbol"] = sym
+        filled.append(g.reset_index().rename(columns={"index": "day"}))
+
+    if not filled:
+        return pd.DataFrame(columns=["symbol", "day", "close"])
+
+    result = pd.concat(filled, ignore_index=True)
+    result["day"] = result["day"].dt.normalize()
+    return result
+
 # --- UI ---
 st.set_page_config(page_title="Crypto P&L Tracker", layout="wide")
 
@@ -230,7 +285,10 @@ summary = pd.DataFrame(rows).sort_values("pnl_quote", ascending=False)
 if not summary.empty:
     rates = {q: quote_rates.get(q) for q in quotes}
     summary["quote_to_USD"] = summary["quote"].map(rates)
-    summary["pnl_USD_est"] = summary.apply(lambda r: r["pnl_quote"] * r["quote_to_USD"] if pd.notnull(r["quote_to_USD"]) else None, axis=1)
+    summary["pnl_USD_est"] = summary.apply(
+        lambda r: r["pnl_quote"] * r["quote_to_USD"] if pd.notnull(r["quote_to_USD"]) else None,
+        axis=1,
+    )
 
     c1, c2, c3 = st.columns([2,2,1])
     with c1:
@@ -255,26 +313,56 @@ else:
     invalid_mask = ~sides.isin(["buy", "sell"])
     dff.loc[invalid_mask, "amount_signed"] = 0.0
     dff["net_base"] = dff.groupby("symbol")["amount_signed"].cumsum()
+    symbols_in_scope = sorted(dff["symbol"].dropna().unique().tolist())
+    start_dt = pd.Timestamp(start).tz_localize("UTC")
+    end_dt = pd.Timestamp(end).tz_localize("UTC")
+    all_days = pd.date_range(start=start_dt.normalize(), end=end_dt.normalize(), freq="D", tz="UTC")
 
-    dff["quote_to_USD"] = dff["quote"].map(quote_rates)
-    dff["net_value_usd"] = dff["net_base"] * dff["price"] * dff["quote_to_USD"]
-
-    portfolio_value = (
-        dff.dropna(subset=["net_value_usd"])
-           .groupby("datetime", as_index=False)["net_value_usd"].sum()
-    )
-
-    if portfolio_value.empty:
-        st.info("Impossible de calculer la valeur nette (taux USD manquants ?).")
-    else:
-        fig_value = px.line(
-            portfolio_value,
-            x="datetime",
-            y="net_value_usd",
-            markers=True,
-            title="Valeur nette du portefeuille (USD)",
+    daily_positions = []
+    for sym, grp in dff.groupby("symbol"):
+        series = grp.set_index("datetime")["net_base"].resample("D").last()
+        series = series.reindex(all_days).ffill().fillna(0.0)
+        daily_positions.append(
+            pd.DataFrame({
+                "symbol": sym,
+                "day": series.index,
+                "net_base": series.values,
+            })
         )
-        st.plotly_chart(fig_value, use_container_width=True)
+
+    if not daily_positions:
+        st.info("Impossible de calculer la valeur nette (positions indisponibles).")
+    else:
+        positions_df = pd.concat(daily_positions, ignore_index=True)
+        price_df = fetch_daily_closes(symbols_in_scope, start, end)
+
+        if price_df.empty:
+            st.info("Impossible de récupérer les prix journaliers pour valoriser le portefeuille.")
+        else:
+            positions_df["day"] = positions_df["day"].dt.normalize()
+            price_df["day"] = price_df["day"].dt.normalize()
+
+            valuations = positions_df.merge(price_df, on=["symbol", "day"], how="left")
+            valuations["quote"] = valuations["symbol"].map(quote_of)
+            valuations["quote_to_USD"] = valuations["quote"].map(quote_rates)
+            valuations["value_usd"] = valuations["net_base"] * valuations["close"] * valuations["quote_to_USD"]
+
+            portfolio_value = (
+                valuations.dropna(subset=["value_usd"])
+                          .groupby("day", as_index=False)["value_usd"].sum()
+            )
+
+            if portfolio_value.empty:
+                st.info("Impossible de calculer la valeur nette (prix/taux USD manquants ?).")
+            else:
+                fig_value = px.line(
+                    portfolio_value,
+                    x="day",
+                    y="value_usd",
+                    markers=True,
+                    title="Valeur nette du portefeuille (USD)",
+                )
+                st.plotly_chart(fig_value, use_container_width=True)
 
 st.subheader("Trades")
 st.dataframe(
