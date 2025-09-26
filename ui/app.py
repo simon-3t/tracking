@@ -105,7 +105,10 @@ if not st.session_state.authenticated:
         user_ok = True if not APP_USERNAME else username.strip() == APP_USERNAME
         if user_ok and password == APP_PASSWORD:
             st.session_state.authenticated = True
-            st.experimental_rerun()
+            if hasattr(st, "rerun"):
+                st.rerun()
+            else:
+                st.experimental_rerun()
         else:
             st.error("Identifiants invalides.")
 
