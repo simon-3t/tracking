@@ -1,7 +1,9 @@
 import os
+import sys
 import subprocess
 from datetime import datetime, timezone, time as dtime, timedelta
 from collections import deque, defaultdict
+from pathlib import Path
 
 import pandas as pd
 from sqlalchemy import create_engine, select
@@ -10,6 +12,10 @@ import streamlit as st
 import plotly.express as px
 import ccxt
 from dotenv import load_dotenv, find_dotenv
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
 
 from app.models import Base, AssetPrice
 
