@@ -627,14 +627,32 @@ else:
                             .groupby("asset", as_index=False)["value_usd"].sum()
                         )
                         latest_alloc = latest_alloc[latest_alloc["value_usd"].abs() > 0]
+
                         if not latest_alloc.empty:
-                            fig_alloc = px.pie(
-                                latest_alloc,
-                                names="asset",
-                                values="value_usd",
-                                title="Répartition du portefeuille (USD)",
-                            )
-                            st.plotly_chart(fig_alloc, use_container_width=True)
+                            pos_alloc = latest_alloc[latest_alloc["value_usd"] > 0]
+                            neg_alloc = latest_alloc[latest_alloc["value_usd"] < 0]
+
+                            if not pos_alloc.empty:
+                                fig_alloc = px.pie(
+                                    pos_alloc,
+                                    names="asset",
+                                    values="value_usd",
+                                    title="Répartition du portefeuille (USD)",
+                                )
+                                st.plotly_chart(fig_alloc, use_container_width=True)
+                            else:
+                                st.info(
+                                    "Aucune position positive à représenter en camembert pour la dernière journée."
+                                )
+
+                            if not neg_alloc.empty:
+                                st.caption(
+                                    "Positions nettes négatives (exposées comme dettes ou shorts) non incluses dans le camembert :"
+                                )
+                                st.dataframe(
+                                    neg_alloc.rename(columns={"value_usd": "value_usd_neg"}),
+                                    use_container_width=True,
+                                )
                         else:
                             st.info("Aucune répartition à afficher pour la dernière journée.")
                     else:
