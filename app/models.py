@@ -42,6 +42,25 @@ class AssetPrice(Base):
     __table_args__ = (UniqueConstraint('asset', 'day', name='uq_asset_day'),)
 
 
+class Transfer(Base):
+    __tablename__ = "transfers"
+
+    id = Column(String, primary_key=True)
+    exchange = Column(String, index=True, nullable=False)
+    direction = Column(String, index=True, nullable=False)  # deposit / withdraw
+    asset = Column(String, index=True, nullable=True)
+    amount = Column(Float)
+    fee = Column(Float)
+    fee_currency = Column(String, nullable=True)
+    status = Column(String, nullable=True)
+    address = Column(String, nullable=True)
+    txid = Column(String, nullable=True)
+    ts = Column(Integer, index=True)
+    iso = Column(DateTime)
+
+    __table_args__ = (UniqueConstraint('id', name='uq_transfer_id'),)
+
+
 def make_session(db_url: str):
     eng = create_engine(db_url, future=True)
     Base.metadata.create_all(eng)
