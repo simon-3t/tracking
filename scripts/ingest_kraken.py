@@ -143,7 +143,15 @@ def ingest_transfers(fetcher, direction: str) -> int:
     try:
         batch = fetcher(limit=500)
     except ccxt.BaseError as e:
-        print(f"⚠️  Kraken API error ({direction}): {e}")
+        message = str(e)
+        lowered = message.lower()
+        if "permission denied" in lowered:
+            print(
+                "ℹ️  Kraken n'a pas les permissions nécessaires pour "
+                f"récupérer les {direction}s. Vérifiez les droits de la clé API."
+            )
+        else:
+            print(f"⚠️  Kraken API error ({direction}): {message}")
         return 0
 
     if not batch:
