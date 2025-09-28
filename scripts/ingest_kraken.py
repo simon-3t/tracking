@@ -141,12 +141,14 @@ def ingest_all_trades():
 
 PERMISSION_HINTS = {
     "deposit": (
-        "Activez les autorisations Kraken “Funding → Consulter les dépôts” "
-        "et régénérez la clé si vous venez de modifier les droits."
+        "Activez les autorisations Kraken “Funding → Consulter les dépôts” et "
+        "“Ledger → Consulter les écritures” puis régénérez la clé si vous venez de "
+        "modifier les droits."
     ),
     "withdraw": (
-        "Activez les autorisations Kraken “Funding → Consulter les retraits” "
-        "et régénérez la clé si vous venez de modifier les droits."
+        "Activez les autorisations Kraken “Funding → Consulter les retraits” et "
+        "“Ledger → Consulter les écritures” puis régénérez la clé si vous venez de "
+        "modifier les droits."
     ),
 }
 
