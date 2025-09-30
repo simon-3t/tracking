@@ -139,6 +139,8 @@ def ingest_all_trades():
     """
     total = 0
     since = None  # pour un vrai incrémental, persiste ce curseur dans une table
+    requests_made = 0
+    additional_page_expected = False
     while True:
         try:
             batch = ex.fetch_my_trades(symbol=None, since=since, limit=50)
@@ -150,12 +152,24 @@ def ingest_all_trades():
             print(f"⚠️  Kraken API error: {e}")
             break
 
+        requests_made += 1
+
         if not batch:
             break
 
+        sorted_batch = sorted(batch, key=lambda t: t.get('timestamp') or 0)
+
+        oldest_timestamp = sorted_batch[0].get('timestamp') if sorted_batch and isinstance(sorted_batch[0], dict) else None
+        if oldest_timestamp is None:
+            print("⚠️  Impossible de déterminer le plus ancien timestamp pour la pagination.")
+            break
+
+        if len(sorted_batch) == 50:
+            additional_page_expected = True
+
         # upsert
         try:
-            for t in batch:
+            for t in sorted_batch:
                 upsert_trade(t)
                 total += 1
             session.commit()
@@ -165,9 +179,14 @@ def ingest_all_trades():
             break
 
         # pagination: avance le curseur
-        since = batch[-1]['timestamp'] + 1
+        since = oldest_timestamp + 1
+        print(f"ℹ️  Pagination vers l'historique plus ancien avec since={since} (timestamp initial {oldest_timestamp}).")
         # respect du rate limit
         time.sleep(ex.rateLimit / 1000)
+
+    if additional_page_expected:
+        assert requests_made > 1, "La pagination n'a pas demandé de page supplémentaire malgré un lot complet."
+        print(f"ℹ️  Pagination confirmée: {requests_made} requêtes effectuées pour récupérer l'historique.")
 
     return total
 
