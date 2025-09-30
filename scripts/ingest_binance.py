@@ -1,7 +1,7 @@
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -54,26 +54,52 @@ def upsert_trade(t):
     )
     session.merge(row)
 
+WINDOW_MS = int(timedelta(days=90).total_seconds() * 1000)
+
+
 def ingest():
     count = 0
+    now_ms = int(time.time() * 1000)
     # Parcourt tous les symbols connus ; seuls ceux où tu as tradé renverront des lignes
     for sym in ex.symbols:
-        try:
-            # pour un vrai incrémental: stocker un "since" par symbol (table cursors)
-            batch = ex.fetch_my_trades(symbol=sym, since=None, limit=100)
+        window_end = now_ms
+        while window_end >= 0:
+            window_start = max(0, window_end - WINDOW_MS + 1)
+            try:
+                batch = ex.fetch_my_trades(
+                    symbol=sym,
+                    since=window_start,
+                    limit=1000,
+                    params={"endTime": window_end},
+                )
+            except ccxt.BaseError:
+                session.rollback()
+                break
+
             if not batch:
+                if window_start <= 0:
+                    break
+                window_end = window_start - 1
+                time.sleep(ex.rateLimit / 1000)
                 continue
-            for t in batch:
-                upsert_trade(t)
-                count += 1
-            session.commit()
-            time.sleep(ex.rateLimit/1000)
-        except ccxt.BaseError:
-            session.rollback()
-            continue
-        except SQLAlchemyError:
-            session.rollback()
-            continue
+
+            batch.sort(key=lambda trade: trade.get("timestamp") or 0)
+            try:
+                for t in batch:
+                    upsert_trade(t)
+                    count += 1
+                session.commit()
+            except SQLAlchemyError:
+                session.rollback()
+                break
+
+            min_ts = min((t.get("timestamp") or window_start) for t in batch)
+            window_end = min_ts - 1
+            if window_end < 0:
+                break
+
+            time.sleep(ex.rateLimit / 1000)
+        time.sleep(ex.rateLimit / 1000)
     return count
 
 if __name__ == "__main__":
