@@ -15,12 +15,45 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from app.models import Trade, make_session
+from app.models import Trade, Transfer, make_session
 
 load_dotenv()
 DB_URL = os.getenv("DB_URL", "sqlite:///pnl.db")
 KRAKEN_KEY = os.getenv("KRAKEN_KEY")
 KRAKEN_SECRET = os.getenv("KRAKEN_SECRET")
+
+
+def parse_history_start(default_year: int = 2018) -> int:
+    """Return the history anchor in milliseconds since epoch.
+
+    Allows overriding via the TRANSFER_HISTORY_START env var. The value may be
+    expressed either as a millisecond timestamp or an ISO date (``YYYY-MM-DD``)
+    optionally including a time component.
+    """
+
+    raw = os.getenv("TRANSFER_HISTORY_START")
+    if not raw:
+        return int(datetime(default_year, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
+
+    raw = raw.strip()
+    if raw.isdigit():
+        return int(raw)
+
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise SystemExit(
+            "⚠️  TRANSFER_HISTORY_START doit être un timestamp en millisecondes ou "
+            "une date ISO (YYYY-MM-DD)."
+        ) from exc
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    return int(parsed.timestamp() * 1000)
+
+
+TRANSFER_HISTORY_START = parse_history_start()
 
 if not KRAKEN_KEY or not KRAKEN_SECRET:
     raise SystemExit("⚠️  KRAKEN_KEY / KRAKEN_SECRET manquants dans .env")
@@ -56,6 +89,46 @@ def upsert_trade(t):
         iso=datetime.fromtimestamp(ts/1000, tz=timezone.utc) if ts else None,
     )
     session.merge(row)
+
+def upsert_transfer(tx, direction: str):
+    ts = int(tx.get('timestamp') or 0)
+    fee_info = tx.get('fee')
+
+    if isinstance(fee_info, dict):
+        fee_cost = fee_info.get('cost')
+        fee_currency = fee_info.get('currency')
+    else:
+        fee_cost = fee_info or 0.0
+        fee_currency = tx.get('feeCurrency')
+
+    info = tx.get('info') or {}
+    raw_identifier = (
+        tx.get('id')
+        or tx.get('txid')
+        or tx.get('refid')
+        or tx.get('referenceId')
+        or info.get('id')
+        or info.get('refid')
+        or info.get('txid')
+        or f"{ts}_{tx.get('currency') or tx.get('code')}_{tx.get('amount')}_{tx.get('address')}"
+    )
+
+    row = Transfer(
+        id=f"kraken_{direction}_{raw_identifier}",
+        exchange="kraken",
+        direction=direction,
+        asset=tx.get('currency') or tx.get('code'),
+        amount=float(tx.get('amount') or 0.0),
+        fee=float(fee_cost or 0.0),
+        fee_currency=fee_currency,
+        status=tx.get('status') or info.get('status'),
+        address=tx.get('address'),
+        txid=tx.get('txid') or info.get('txid'),
+        ts=ts,
+        iso=datetime.fromtimestamp(ts / 1000, tz=timezone.utc) if ts else None,
+    )
+    session.merge(row)
+
 
 def ingest_all_trades():
     """
@@ -98,6 +171,77 @@ def ingest_all_trades():
 
     return total
 
+
+PERMISSION_HINTS = {
+    "deposit": (
+        "Activez les autorisations Kraken “Funding → Consulter les dépôts” et "
+        "“Ledger → Consulter les écritures” puis régénérez la clé si vous venez de "
+        "modifier les droits."
+    ),
+    "withdraw": (
+        "Activez les autorisations Kraken “Funding → Consulter les retraits” et "
+        "“Ledger → Consulter les écritures” puis régénérez la clé si vous venez de "
+        "modifier les droits."
+    ),
+}
+
+
+def ingest_transfers(fetcher, direction: str) -> int:
+    since = TRANSFER_HISTORY_START
+    total = 0
+
+    while True:
+        try:
+            batch = fetcher(since=since, limit=500)
+        except ccxt.BaseError as e:
+            message = str(e)
+            lowered = message.lower()
+            if "permission denied" in lowered:
+                hint = PERMISSION_HINTS.get(
+                    direction,
+                    "Activez les autorisations Kraken Funding pour cette opération et "
+                    "régénérez la clé si nécessaire.",
+                )
+                print(
+                    "ℹ️  Kraken n'a pas les permissions nécessaires pour "
+                    f"récupérer les {direction}s. {hint}"
+                )
+            else:
+                print(f"⚠️  Kraken API error ({direction}): {message}")
+            break
+
+        if not batch:
+            break
+
+        try:
+            for tx in batch:
+                upsert_transfer(tx, direction)
+                total += 1
+            session.commit()
+        except SQLAlchemyError as e:
+            session.rollback()
+            print(f"⚠️  DB error while storing Kraken {direction}s: {e}")
+            break
+        finally:
+            time.sleep(ex.rateLimit / 1000)
+
+        last_ts = max(int(tx.get('timestamp') or 0) for tx in batch)
+        if not last_ts:
+            break
+        since = last_ts + 1
+
+    return total
+
 if __name__ == "__main__":
-    n = ingest_all_trades()
-    print(f"✅ Kraken ingestion terminée. {n} trades insérés/à jour.")
+    trades = deposits = withdrawals = 0
+    try:
+        trades = ingest_all_trades()
+        deposits = ingest_transfers(ex.fetch_deposits, "deposit")
+        withdrawals = ingest_transfers(ex.fetch_withdrawals, "withdraw")
+    finally:
+        session.close()
+
+    print(
+        "✅ Kraken ingestion terminée. "
+        f"{trades} trades, {deposits} dépôts et {withdrawals} retraits insérés/à jour."
+    )
