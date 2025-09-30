@@ -348,10 +348,10 @@ st.subheader("🔄 Mise à jour des données")
 update_feedback = None
 controls = st.columns(2)
 with controls[0]:
-    if st.button("Mettre à jour Binance", use_container_width=True):
+    if st.button("Mettre à jour Binance", width="stretch"):
         update_feedback = run_ingestion("scripts/ingest_binance.py", "Binance")
 with controls[1]:
-    if st.button("Mettre à jour Kraken", use_container_width=True):
+    if st.button("Mettre à jour Kraken", width="stretch"):
         update_feedback = run_ingestion("scripts/ingest_kraken.py", "Kraken")
 
 if update_feedback:
@@ -435,9 +435,9 @@ if not summary.empty:
     with c2:
         top = summary.nlargest(10, "pnl_USD_est") if "pnl_USD_est" in summary else summary.nlargest(10, "pnl_quote")
         fig = px.bar(top, x="symbol", y="pnl_USD_est", title="Top P&L (USD estimé)")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     with c3:
-        st.dataframe(summary, use_container_width=True, height=400)
+        st.dataframe(summary, width="stretch", height=400)
 else:
     st.info("Pas encore de P&L réalisé dans la période/filtres.")
 
@@ -614,7 +614,7 @@ else:
                         markers=True,
                         title="Valeur nette du portefeuille (USD)",
                     )
-                    st.plotly_chart(fig_value, use_container_width=True)
+                    st.plotly_chart(fig_value, width="stretch")
 
                     allocation_detail = pd.concat(
                         [base_valuations_detail, cash_valuations_detail], ignore_index=True
@@ -639,7 +639,7 @@ else:
                                     values="value_usd",
                                     title="Répartition du portefeuille (USD)",
                                 )
-                                st.plotly_chart(fig_alloc, use_container_width=True)
+                                st.plotly_chart(fig_alloc, width="stretch")
                             else:
                                 st.info(
                                     "Aucune position positive à représenter en camembert pour la dernière journée."
@@ -651,7 +651,7 @@ else:
                                 )
                                 st.dataframe(
                                     neg_alloc.rename(columns={"value_usd": "value_usd_neg"}),
-                                    use_container_width=True,
+                                    width="stretch",
                                 )
                         else:
                             st.info("Aucune répartition à afficher pour la dernière journée.")
@@ -662,7 +662,7 @@ st.subheader("Trades")
 st.dataframe(
     dff[["datetime","exchange","symbol","side","amount","price","fee","fee_currency"]]
       .sort_values("datetime", ascending=False),
-    use_container_width=True, height=420
+    width="stretch", height=420
 )
 
 st.subheader("Activité")
@@ -670,10 +670,10 @@ st.subheader("Activité")
 dff["day"] = dff["datetime"].dt.date
 by_day = dff.groupby(["day"]).size().reset_index(name="trades")
 fig2 = px.line(by_day, x="day", y="trades", title="Nombre de trades par jour")
-st.plotly_chart(fig2, use_container_width=True)
+st.plotly_chart(fig2, width="stretch")
 
 # Notional échangé par jour (approx amount*price, somme absolue)
 dff["notional"] = (dff["amount"].abs() * dff["price"].abs())
 notional = dff.groupby(["day"]).agg({"notional":"sum"}).reset_index()
 fig3 = px.bar(notional, x="day", y="notional", title="Notional échangé par jour (approx)")
-st.plotly_chart(fig3, use_container_width=True)
+st.plotly_chart(fig3, width="stretch")
