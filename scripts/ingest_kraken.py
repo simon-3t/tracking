@@ -22,6 +22,39 @@ DB_URL = os.getenv("DB_URL", "sqlite:///pnl.db")
 KRAKEN_KEY = os.getenv("KRAKEN_KEY")
 KRAKEN_SECRET = os.getenv("KRAKEN_SECRET")
 
+
+def parse_history_start(default_year: int = 2018) -> int:
+    """Return the history anchor in milliseconds since epoch.
+
+    Allows overriding via the TRANSFER_HISTORY_START env var. The value may be
+    expressed either as a millisecond timestamp or an ISO date (``YYYY-MM-DD``)
+    optionally including a time component.
+    """
+
+    raw = os.getenv("TRANSFER_HISTORY_START")
+    if not raw:
+        return int(datetime(default_year, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
+
+    raw = raw.strip()
+    if raw.isdigit():
+        return int(raw)
+
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise SystemExit(
+            "⚠️  TRANSFER_HISTORY_START doit être un timestamp en millisecondes ou "
+            "une date ISO (YYYY-MM-DD)."
+        ) from exc
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    return int(parsed.timestamp() * 1000)
+
+
+TRANSFER_HISTORY_START = parse_history_start()
+
 if not KRAKEN_KEY or not KRAKEN_SECRET:
     raise SystemExit("⚠️  KRAKEN_KEY / KRAKEN_SECRET manquants dans .env")
 
@@ -154,40 +187,48 @@ PERMISSION_HINTS = {
 
 
 def ingest_transfers(fetcher, direction: str) -> int:
-    try:
-        batch = fetcher(limit=500)
-    except ccxt.BaseError as e:
-        message = str(e)
-        lowered = message.lower()
-        if "permission denied" in lowered:
-            hint = PERMISSION_HINTS.get(
-                direction,
-                "Activez les autorisations Kraken Funding pour cette opération et "
-                "régénérez la clé si nécessaire.",
-            )
-            print(
-                "ℹ️  Kraken n'a pas les permissions nécessaires pour "
-                f"récupérer les {direction}s. {hint}"
-            )
-        else:
-            print(f"⚠️  Kraken API error ({direction}): {message}")
-        return 0
-
-    if not batch:
-        return 0
-
+    since = TRANSFER_HISTORY_START
     total = 0
-    try:
-        for tx in batch:
-            upsert_transfer(tx, direction)
-            total += 1
-        session.commit()
-    except SQLAlchemyError as e:
-        session.rollback()
-        print(f"⚠️  DB error while storing Kraken {direction}s: {e}")
-        return 0
-    finally:
-        time.sleep(ex.rateLimit / 1000)
+
+    while True:
+        try:
+            batch = fetcher(since=since, limit=500)
+        except ccxt.BaseError as e:
+            message = str(e)
+            lowered = message.lower()
+            if "permission denied" in lowered:
+                hint = PERMISSION_HINTS.get(
+                    direction,
+                    "Activez les autorisations Kraken Funding pour cette opération et "
+                    "régénérez la clé si nécessaire.",
+                )
+                print(
+                    "ℹ️  Kraken n'a pas les permissions nécessaires pour "
+                    f"récupérer les {direction}s. {hint}"
+                )
+            else:
+                print(f"⚠️  Kraken API error ({direction}): {message}")
+            break
+
+        if not batch:
+            break
+
+        try:
+            for tx in batch:
+                upsert_transfer(tx, direction)
+                total += 1
+            session.commit()
+        except SQLAlchemyError as e:
+            session.rollback()
+            print(f"⚠️  DB error while storing Kraken {direction}s: {e}")
+            break
+        finally:
+            time.sleep(ex.rateLimit / 1000)
+
+        last_ts = max(int(tx.get('timestamp') or 0) for tx in batch)
+        if not last_ts:
+            break
+        since = last_ts + 1
 
     return total
 
